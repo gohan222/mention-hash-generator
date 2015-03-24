@@ -5,12 +5,19 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 	"time"
 
 	jc "github.com/codisms/json-config"
 	"github.com/coopernurse/gorp"
 	"github.com/inspirent/go-spooky"
 	loggerLib "github.com/inspirent/logger"
+)
+
+const (
+	TEMP_TABLE_NAME = "temp_mention_hash"
+	TEMP_BATCH_SIZE = 100
+	TEMP_SLEEP_TIME = "100ms"
 )
 
 var configFileName = flag.String("conf", "../test.conf", "Pass in a config file")
@@ -82,12 +89,12 @@ func initSettings() {
 
 	batchSize, found = config.GetInt("batchSize")
 	if !found {
-		config.SettingNotFound("sleepTime not found in config ")
+		batchSize = TEMP_BATCH_SIZE
 	}
 
 	sleepTimeString, found := config.GetString("sleepTime")
 	if !found {
-		config.SettingNotFound("sleepTime not found in config ")
+		sleepTimeString = TEMP_SLEEP_TIME
 	}
 
 	sleepTime, err = time.ParseDuration(sleepTimeString)
@@ -119,23 +126,23 @@ func run() {
 
 		logger.Info("************Getting next batch.")
 		//get the next batch of
-		mentions, err := getSegment(batchSize)
+		dbMentions, err := getSegment(batchSize)
 		if err != nil {
 			logger.Errorf("Unable to create transcation: %v\n", err)
 			return
 		}
 
-		if mentions == nil {
+		if dbMentions == nil {
 			logger.Error("Mentions array was nil.")
 			break
 		}
 
-		if len(mentions) == 0 {
+		if len(dbMentions) == 0 {
 			logger.Info("Mentions array is empty.")
 			break
 		}
 
-		for _, dbMention := range mentions {
+		for _, dbMention := range dbMentions {
 			if dbMention == nil || dbMention.Snippets == nil {
 				logger.Error("Nil mention encountered.")
 				continue
@@ -147,8 +154,14 @@ func run() {
 			}
 
 			hash := createHash(*dbMention.Snippets)
-			// logger.Infof("Hash value: %d", *hash)
-			err := updateMentionHash(*dbMention.MentionId, hash)
+			if hash == nil {
+				logger.Errorf("Create hash returned nil")
+				continue
+			}
+
+			dbMention.MentionHash = hash
+
+			err := updateMentionHash(*dbMention.MentionId, *hash)
 			if err != nil {
 				logger.Errorf("Unable update mention hash %v: %v\n", *dbMention.MentionId, err)
 				continue
@@ -156,7 +169,13 @@ func run() {
 			time.Sleep(sleepTime)
 		}
 
-		logger.Infof("Records processed length %+v\n", len(mentions))
+		/*err = copyData(dbMentions)
+		if err != nil {
+			logger.Errorf("Unable update mention hash: %v\n", err)
+			continue
+		}*/
+
+		logger.Infof("Records processed length %+v\n", len(dbMentions))
 		break
 	}
 }
@@ -178,6 +197,105 @@ func getRecordCount() (int64, error) {
 	logger.Infof("*****Time to retrieve count: %+v\n", time.Now().Sub(startTime))
 
 	return recordCount, nil
+}
+
+func copyData(dbMentions []*DbMention) error {
+	startTime := time.Now().UTC()
+
+	if dbMentions == nil {
+		logger.Error("Mentions list is nil.")
+		return fmt.Errorf("Mentions list is nil.")
+	}
+
+	if len(dbMentions) == 0 {
+		logger.Error("Mentions list is empty.")
+		return fmt.Errorf("Mentions list is empty.")
+	}
+
+	//crate temp table
+	sqlStatement := fmt.Sprintf(`
+		DROP TABLE IF EXISTS "%s" CASCADE;
+		CREATE TABLE IF NOT EXISTS %s(
+			mention_id INTEGER,
+			mention_hash BIGINT,
+
+			CONSTRAINT "_pk_%s@mention_id" PRIMARY KEY( "mention_id" ) 
+		);
+		`,
+		TEMP_TABLE_NAME,
+		TEMP_TABLE_NAME,
+		TEMP_TABLE_NAME)
+
+	_, err := dbmap.Exec(sqlStatement)
+	if err != nil {
+		logger.Errorf("Create temp table: %v\n", err)
+		return err
+	}
+
+	sqlInsertList := make([]string, len(dbMentions))
+	for index, dbMention := range dbMentions {
+		if dbMention == nil {
+			logger.Error("Mention is nil when processing insert statement.")
+			continue
+		}
+		if dbMention.MentionId == nil {
+			logger.Error("Mention id is nil when processing insert statement.")
+			continue
+		}
+		if dbMention.MentionHash == nil {
+			logger.Error("Mention hash is nil when processing insert statement.")
+			continue
+		}
+
+		sqlInsertList[index] = fmt.Sprintf("(%d, %d )", *dbMention.MentionId, *dbMention.MentionHash)
+	}
+
+	//insert into temp table
+	sqlStatement = fmt.Sprintf(`
+		INSERT INTO %s (mention_id, mention_hash)
+		VALUES
+    	%s;`,
+		TEMP_TABLE_NAME,
+		strings.Join(sqlInsertList, ","))
+
+	_, err = dbmap.Exec(sqlStatement)
+	if err != nil {
+		logger.Errorf("insert into temp table: %v\n", err)
+		return err
+	}
+
+	//copy data from temp table to mentions list
+	sqlStatement = fmt.Sprintf(`
+		UPDATE 
+			mention AS m 
+		SET 
+			mention_hash = tmh.mention_hash
+		FROM 
+			%s AS tmh
+		WHERE m.mention_id = tmh.mention_id
+	`,
+		TEMP_TABLE_NAME)
+
+	_, err = dbmap.Exec(sqlStatement)
+	if err != nil {
+		logger.Errorf("Update mention table: %v\n", err)
+		return err
+	}
+
+	//delete temp table
+	//once all is done delete the table
+	sqlStatement = fmt.Sprintf(`
+		DROP TABLE IF EXISTS "%s" CASCADE;
+		`,
+		TEMP_TABLE_NAME)
+
+	_, err = dbmap.Exec(sqlStatement)
+	if err != nil {
+		logger.Errorf("delete temp table: %v\n", err)
+		return err
+	}
+	logger.Infof("*****Time to copy data: %+v\n", time.Now().Sub(startTime))
+	return nil
 }
 
 func getSegment(size int) ([]*DbMention, error) {
@@ -230,9 +348,9 @@ func updateMentionHash(mentionId int64, hash int64) error {
 	return nil
 }
 
-func createHash(key string) int64 {
+func createHash(key string) *int64 {
 	var hash int64 = int64(spooky.Hash32([]byte(key)))
-	return hash
+	return &hash
 }
 
 func openTransaction() (*gorp.Transaction, error) {

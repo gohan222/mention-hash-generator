@@ -7,6 +7,7 @@ package main
 *******************************************/
 
 type DbMention struct {
-	MentionId *int64  `db:"mention_id"`
-	Snippets  *string `db:"mention_snippets"`
+	MentionId   *int64  `db:"mention_id"`
+	Snippets    *string `db:"mention_snippets"`
+	MentionHash *int64  `db:"mention_hash"`
 }

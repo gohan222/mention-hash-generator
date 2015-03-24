@@ -5,9 +5,9 @@ generate hsah
 
 - postgresConnection
   - connection string to mp database
--sleepTime
+- sleepTime
   - how long the process waits between segments.
--batchSize
+- batchSize
   -the size of each sgement
 - log
   - log subsection

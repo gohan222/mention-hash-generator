@@ -1,0 +1,128 @@
+box: wercker/golang
+# Build definition
+build:
+  # The steps that will be executed on build
+  steps:
+    # Sets the go workspace and places your package
+    # at the right place in the workspace tree
+    - setup-go-workspace:
+        package_dir: $WERCKER_GIT_REPOSITORY
+
+    - mktemp:
+        envvar: SSH_KEY_PRIVATE_PATH
+
+    - create-file:
+        name: write key
+        filename: $SSH_KEY_PRIVATE_PATH
+        content: $PRIVATE_KEY
+        overwrite: true
+        hide-from-log: true
+
+    - script:
+        name: write ssh config
+        code: |
+          echo >> ~/.ssh/config
+          echo Host github.com >> ~/.ssh/config
+          echo HostName github.com >> ~/.ssh/config
+          echo User git >> ~/.ssh/config
+          echo IdentityFile $SSH_KEY_PRIVATE_PATH >> ~/.ssh/config
+
+    # Gets the public dependencies
+    - script:
+        name: go get
+        code: |
+          cd $GOPATH
+          go version
+          go env
+          ls -1 $(go env GOROOT)/pkg
+
+          git clone git@github.com:inspirent/notifications.git src/github.com/inspirent/notifications
+          git clone git@github.com:inspirent/logger.git src/github.com/inspirent/logger
+          git clone git@github.com:inspirent/server-base.git src/github.com/inspirent/server-base
+          git clone git@github.com:inspirent/data-access-authority.git src/github.com/inspirent/data-access-authority
+
+          if [ $WERCKER_GIT_REPOSITORY == "sso-auth" ]; then cp -R src/$WERCKER_GIT_REPOSITORY src/github.com/inspirent/$WERCKER_GIT_REPOSITORY; else git clone git@github.com:inspirent/sso-auth.git src/github.com/inspirent/sso-auth; fi
+          if [ $WERCKER_GIT_REPOSITORY == "sso-mgmt" ]; then cp -R src/$WERCKER_GIT_REPOSITORY src/github.com/inspirent/$WERCKER_GIT_REPOSITORY; else git clone git@github.com:inspirent/sso-mgmt.git src/github.com/inspirent/sso-mgmt; fi
+          if [ $WERCKER_GIT_REPOSITORY == "mp-das" ]; then cp -R src/$WERCKER_GIT_REPOSITORY src/github.com/inspirent/$WERCKER_GIT_REPOSITORY; else git clone git@github.com:inspirent/mp-das.git src/github.com/inspirent/mp-das; fi
+          if [ $WERCKER_GIT_REPOSITORY == "mavis-das" ]; then cp -R src/$WERCKER_GIT_REPOSITORY src/github.com/inspirent/$WERCKER_GIT_REPOSITORY; else git clone git@github.com:inspirent/mavis-das.git src/github.com/inspirent/mavis-das; fi
+          if [ $WERCKER_GIT_REPOSITORY == "mp-analytics-das" ]; then cp -R src/$WERCKER_GIT_REPOSITORY src/github.com/inspirent/$WERCKER_GIT_REPOSITORY; else git clone git@github.com:inspirent/mp-analytics-das.git src/github.com/inspirent/mp-analytics-das; fi
+          if [ $WERCKER_GIT_REPOSITORY == "iron-io" ]; then cp -R src/$WERCKER_GIT_REPOSITORY src/github.com/inspirent/$WERCKER_GIT_REPOSITORY; else git clone git@github.com:inspirent/iron-io.git src/github.com/inspirent/iron-io; fi
+          if [ $WERCKER_GIT_REPOSITORY == "mp-broadcaster-das" ]; then cp -R src/$WERCKER_GIT_REPOSITORY src/github.com/inspirent/$WERCKER_GIT_REPOSITORY; else git clone git@github.com:inspirent/mp-broadcaster-das.git src/github.com/inspirent/mp-broadcaster-das; fi
+
+          find src/github.com/inspirent -type d -name server | xargs rm -rf
+
+          if [ -d src/$WERCKER_GIT_REPOSITORY/client/ ]; then rm -rf src/$WERCKER_GIT_REPOSITORY/client/; fi
+
+          go get github.com/jmcvetta/napping
+          if [ -d src/github.com/jmcvetta/napping/examples/ ]; then rm -rf src/github.com/jmcvetta/napping/examples/; fi
+
+          go get github.com/denisenkom/go-mssqldb
+          if [ -d src/github.com/denisenkom/go-mssqldb/examples/ ]; then rm -rf src/github.com/denisenkom/go-mssqldb/examples/; fi
+
+          go get -v ./...
+
+    # Build the project
+    - script:
+        name: go install
+        code: |
+          cd $GOPATH
+          ls -asFl
+          ls -asFl src/
+          ls -asFl src/$WERCKER_GIT_REPOSITORY/
+          if [ -d src/$WERCKER_GIT_REPOSITORY/server ]; then ls -asFl src/$WERCKER_GIT_REPOSITORY/server; fi
+          if [ -d src/$WERCKER_GIT_REPOSITORY/server ]; then echo Building $WERCKER_GIT_REPOSITORY/server...; go install -v $WERCKER_GIT_REPOSITORY/server; else echo Building $WERCKER_GIT_REPOSITORY...; go install -v $WERCKER_GIT_REPOSITORY; fi
+          ls -asFl bin/
+          md5sum -b bin/*
+
+    # Test the project
+    #- script:
+    #    name: go test
+    #    code: |
+    #      go test -v -test.v -check.v ./...
+
+    - script:
+        name: Save binaries
+        code: |
+          if [ -f $GOPATH/bin/server ]; then mv -v $GOPATH/bin/server $WERCKER_OUTPUT_DIR/$WERCKER_GIT_REPOSITORY; fi
+          if [ -f $GOPATH/bin/$WERCKER_GIT_REPOSITORY ]; then mv -v $GOPATH/bin/$WERCKER_GIT_REPOSITORY $WERCKER_OUTPUT_DIR/; fi
+          if [ ! -f $GOPATH/bin/server && ! -f $GOPATH/bin/$WERCKER_GIT_REPOSITORY ]; then false; fi
+
+  after-steps:
+    - hipchat-notify:
+        token: $HIPCHAT_TOKEN
+        room-id: 783420
+        from-name: wercker
+        on: failed
+
+# Deploy Definition
+deploy:
+  # The steps that will be executed on deploy
+  steps:
+    - add-to-known_hosts:
+        hostname: 8.19.32.177
+
+    - add-to-known_hosts:
+        hostname: 8.19.32.80
+
+    - mktemp:
+        envvar: SSH_KEY_PRIVATE_PATH
+
+    - create-file:
+        name: write key
+        filename: $SSH_KEY_PRIVATE_PATH
+        content: $PRIVATE_KEY
+        overwrite: true
+        hide-from-log: true
+
+    - script:
+        name: transfer application
+        code: |
+          pwd
+          ls -laFl
+          md5sum -b *
+          scp -i $SSH_KEY_PRIVATE_PATH -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $WERCKER_GIT_REPOSITORY release@8.19.32.177:/home/release/binaries/$ENVIRONMENT
+
+    - script:
+        name: update instances
+        code: |
+          ssh -i $SSH_KEY_PRIVATE_PATH -l release -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no 8.19.32.177 "echo \$(/root/datacenter/datacenter.js update-app --app=$WERCKER_GIT_REPOSITORY --version=$ENVIRONMENT)"

@@ -1,11 +1,6 @@
-cron-collection-stats
+generate hsah
 =====================
 
-### Crontab
-*run process every 5 minutes.
-```
-*/5 * * * * ./<binary> -conf <config_path> [> <log_file_path> 2>&1]
-```
 ### Configurations
 
 - postgresConnection

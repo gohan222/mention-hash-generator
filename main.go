@@ -120,7 +120,7 @@ func run() {
 
 	//calc number of segments
 	numberOfSegments := int(math.Ceil(float64(recordCount) / float64(batchSize)))
-	logger.Infof("************Record count: %d", numberOfSegments)
+	logger.Infof("************Segment count: %d", numberOfSegments)
 
 	for i := 0; i < numberOfSegments; i++ {
 
@@ -161,22 +161,22 @@ func run() {
 
 			dbMention.MentionHash = hash
 
-			err := updateMentionHash(*dbMention.MentionId, *hash)
+			/*err := updateMentionHash(*dbMention.MentionId, *hash)
 			if err != nil {
 				logger.Errorf("Unable update mention hash %v: %v\n", *dbMention.MentionId, err)
 				continue
 			}
-			time.Sleep(sleepTime)
+			time.Sleep(sleepTime)*/
 		}
 
-		/*err = copyData(dbMentions)
+		err = copyData(dbMentions)
 		if err != nil {
 			logger.Errorf("Unable update mention hash: %v\n", err)
 			continue
-		}*/
+		}
+		time.Sleep(sleepTime)
 
 		logger.Infof("Records processed length %+v\n", len(dbMentions))
-		break
 	}
 }
 
@@ -202,6 +202,14 @@ func getRecordCount() (int64, error) {
 func copyData(dbMentions []*DbMention) error {
 	startTime := time.Now().UTC()
 
+	trans, err := openTransaction()
+	if err != nil {
+		logger.Errorf("Create transaction error: %v\n", err)
+		return err
+	}
+
+	defer rollbackTransaction(trans)
+
 	if dbMentions == nil {
 		logger.Error("Mentions list is nil.")
 		return fmt.Errorf("Mentions list is nil.")
@@ -226,7 +234,7 @@ func copyData(dbMentions []*DbMention) error {
 		TEMP_TABLE_NAME,
 		TEMP_TABLE_NAME)
 
-	_, err := dbmap.Exec(sqlStatement)
+	_, err = trans.Exec(sqlStatement)
 	if err != nil {
 		logger.Errorf("Create temp table: %v\n", err)
 		return err
@@ -258,7 +266,7 @@ func copyData(dbMentions []*DbMention) error {
 		TEMP_TABLE_NAME,
 		strings.Join(sqlInsertList, ","))
 
-	_, err = dbmap.Exec(sqlStatement)
+	_, err = trans.Exec(sqlStatement)
 	if err != nil {
 		logger.Errorf("insert into temp table: %v\n", err)
 		return err
@@ -276,7 +284,7 @@ func copyData(dbMentions []*DbMention) error {
 	`,
 		TEMP_TABLE_NAME)
 
-	_, err = dbmap.Exec(sqlStatement)
+	_, err = trans.Exec(sqlStatement)
 	if err != nil {
 		logger.Errorf("Update mention table: %v\n", err)
 		return err
@@ -289,11 +297,13 @@ func copyData(dbMentions []*DbMention) error {
 		`,
 		TEMP_TABLE_NAME)
 
-	_, err = dbmap.Exec(sqlStatement)
+	_, err = trans.Exec(sqlStatement)
 	if err != nil {
 		logger.Errorf("delete temp table: %v\n", err)
 		return err
 	}
+
+	commitTransaction(trans)
 	logger.Infof("*****Time to copy data: %+v\n", time.Now().Sub(startTime))
 	return nil
 }
@@ -370,9 +380,18 @@ func commitTransaction(trans *gorp.Transaction) {
 
 	if err := trans.Commit(); err != nil {
 		logger.Errorf("Unable to commit transaction: %v\n", err)
+		rollbackTransaction(trans)
+	}
+}
 
-		if rErr := trans.Rollback(); rErr != nil {
-			logger.Errorf("Unable to roll back transaction: %v\n", rErr)
-		}
+func rollbackTransaction(trans *gorp.Transaction) {
+	//we ignor errors on rollback since it's wrapped in a defer
+	//and causes excessive noise on false negative.
+	if trans == nil {
+		return
+	}
+
+	if err := trans.Rollback(); err != nil {
+		return
 	}
 }
